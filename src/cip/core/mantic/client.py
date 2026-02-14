@@ -114,7 +114,9 @@ class ManticMCPClient:
         """Call a tool on cip-mantic-core and return the parsed response.
 
         fastmcp.Client.call_tool returns a list of content blocks.
-        We expect a single text block containing JSON.
+        We expect a single content block containing JSON, but we accept:
+        - text blocks containing JSON
+        - json/data blocks (already parsed dicts in some transports)
         """
         logger.debug("Calling cip-mantic-core tool %s", tool_name)
 
@@ -127,29 +129,46 @@ class ManticMCPClient:
                 "Is the cip-mantic-core server running?"
             ) from None
 
-        # fastmcp returns list of content blocks — extract the text
         if not result:
             raise ManticResponseError(f"Empty response from {tool_name}")
 
-        # result may be a list of content objects or a single object
-        text = _extract_text(result)
-        if text is None:
+        payload = _extract_payload(result)
+        if payload is None:
             raise ManticResponseError(
-                f"No text content in response from {tool_name}"
+                f"No usable content in response from {tool_name}"
             )
 
-        try:
-            parsed = json.loads(text)
-        except (json.JSONDecodeError, TypeError) as exc:
-            raise ManticResponseError(
-                f"Invalid JSON from {tool_name}: {exc}"
-            ) from exc
+        if isinstance(payload, str):
+            try:
+                parsed: Any = json.loads(payload)
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ManticResponseError(
+                    f"Invalid JSON from {tool_name}: {exc}"
+                ) from exc
+        else:
+            parsed = payload
 
-        if isinstance(parsed, dict) and parsed.get("status") == "error":
-            error_msg = parsed.get("error", "Unknown error")
+        if not isinstance(parsed, dict):
+            raise ManticResponseError(
+                f"Expected JSON object from {tool_name}, got {type(parsed).__name__}"
+            )
+
+        if parsed.get("status") == "error":
+            error_msg = _format_error(parsed.get("error"))
             raise ManticDetectionError(
                 f"cip-mantic-core returned error: {error_msg}"
             )
+
+        # Detection tools must return a Mantic envelope with a 'result' object.
+        if tool_name.startswith("mantic_detect"):
+            if parsed.get("status") != "ok":
+                raise ManticResponseError(
+                    f"Unexpected status from {tool_name}: {parsed.get('status')!r}"
+                )
+            if "result" not in parsed or not isinstance(parsed.get("result"), dict):
+                raise ManticResponseError(
+                    f"Missing or invalid 'result' in response from {tool_name}"
+                )
 
         return parsed
 
@@ -201,3 +220,85 @@ def _extract_text(result: Any) -> str | None:
         return result.text
 
     return None
+
+
+def _extract_payload(result: Any) -> Any | None:
+    """Extract a usable payload from a fastmcp tool result.
+
+    Some transports return:
+    - list[ContentBlock] where ContentBlock.type is 'text' and ContentBlock.text contains JSON
+    - list[ContentBlock] where ContentBlock.type is 'json' and ContentBlock.data is already a dict
+    - a single ContentBlock
+    - a raw string
+    - an already-parsed dict (in certain mocks)
+    """
+    if isinstance(result, (dict, list)) and not isinstance(result, str):
+        # dict: already parsed payload
+        if isinstance(result, dict):
+            return result
+
+        # list: prefer JSON/data blocks, then text blocks
+        if isinstance(result, list):
+            for block in result:
+                payload = _payload_from_block(block, prefer_json=True)
+                if payload is not None:
+                    return payload
+            for block in result:
+                payload = _payload_from_block(block, prefer_json=False)
+                if payload is not None:
+                    return payload
+            return None
+
+    if isinstance(result, str):
+        return result
+
+    # Single content block object
+    payload = _payload_from_block(result, prefer_json=True)
+    if payload is not None:
+        return payload
+    return _payload_from_block(result, prefer_json=False)
+
+
+def _payload_from_block(block: Any, *, prefer_json: bool) -> Any | None:
+    """Extract payload from a single content block."""
+    # Dict-like blocks
+    if isinstance(block, dict):
+        if prefer_json:
+            if "data" in block:
+                return block["data"]
+            if "json" in block:
+                return block["json"]
+        if "text" in block:
+            return block["text"]
+        return None
+
+    # Objects with attributes
+    if prefer_json:
+        if getattr(block, "type", None) == "json":
+            for attr in ("data", "json"):
+                if hasattr(block, attr):
+                    return getattr(block, attr)
+        for attr in ("data", "json"):
+            if hasattr(block, attr):
+                return getattr(block, attr)
+
+    if hasattr(block, "text"):
+        return block.text
+
+    if isinstance(block, str):
+        return block
+
+    return None
+
+
+def _format_error(error: Any) -> str:
+    """Format an error payload from cip-mantic-core into a human-readable string."""
+    if error is None:
+        return "Unknown error"
+    if isinstance(error, str):
+        return error
+    if isinstance(error, dict):
+        # Common pattern: {"code": "...", "message": "..."}
+        msg = error.get("message") or error.get("code")
+        return msg if isinstance(msg, str) and msg else str(error)
+    return str(error)
