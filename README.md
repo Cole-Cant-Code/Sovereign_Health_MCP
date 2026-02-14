@@ -2,6 +2,10 @@
 
 A privacy-first personal health intelligence server built on the [Model Context Protocol](https://modelcontextprotocol.io). Translates your vitals, labs, activity, and preventive care into four quantitative health signals, runs deterministic anomaly detection via [Mantic Thinking](https://github.com/Cole-Cant-Code/mantic-thinking), and returns scaffold-driven analysis through an inner specialist LLM — all while keeping raw health data encrypted on your device.
 
+## License
+
+Free for individuals for personal/non-commercial use. Any commercial or monetized use requires a paid license. See `LICENSE.md` and `COMMERCIAL_LICENSE.md`.
+
 ## What it does
 
 ```
