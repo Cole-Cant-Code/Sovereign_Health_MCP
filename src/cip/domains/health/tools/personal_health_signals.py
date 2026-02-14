@@ -104,14 +104,33 @@ def _safe_float(val: Any) -> float | None:
 
 
 def _detect_escalation_triggers(
-    *, layer_values: list[float], vitals_data: dict[str, Any]
+    *,
+    layer_values: list[float],
+    vitals_data: dict[str, Any],
+    signal_details: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Return escalation trigger identifiers derived from raw data/signals."""
+    """Return escalation trigger identifiers derived from raw data/signals.
+
+    ``signal_details`` is the ``HealthSignals.details`` dict produced by the
+    translator.  When a signal was computed from a data-fallback (missing data)
+    rather than real measurements, its sub-dict contains a ``"fallback"`` key.
+    We only fire the all-signals-low trigger when every signal is backed by
+    *real* data — not when data is simply absent.
+    """
     triggers: list[str] = []
 
     # Trigger: all four signals are very low (system-wide risk)
+    # Guard: skip if any signal used a fallback value (missing data ≠ danger).
     if len(layer_values) == 4 and all(isinstance(v, (int, float)) and v < 0.3 for v in layer_values):
-        triggers.append("all_signals_below_0.3")
+        has_fallback = False
+        if signal_details:
+            for layer_name in LAYER_NAMES:
+                layer_detail = signal_details.get(layer_name, {})
+                if isinstance(layer_detail, dict) and "fallback" in layer_detail:
+                    has_fallback = True
+                    break
+        if not has_fallback:
+            triggers.append("all_signals_below_0.3")
 
     # Trigger: very high systolic BP reading (vitals safety guardrail)
     systolic = _safe_float(
@@ -367,7 +386,9 @@ def register_personal_health_signal_tools(
             # 3. Deterministic safety escalation (before any LLM call)
             # -----------------------------------------------------------
             escalation_triggers = _detect_escalation_triggers(
-                layer_values=layer_values, vitals_data=vitals_data
+                layer_values=layer_values,
+                vitals_data=vitals_data,
+                signal_details=signals.details,
             )
 
             # Precompute deterministic signal snapshot for both LLM and deterministic responses.
