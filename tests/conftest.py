@@ -116,37 +116,33 @@ def engine(registry: ScaffoldRegistry) -> ScaffoldEngine:
 _FRICTION_ENVELOPE: dict[str, Any] = {
     "status": "ok",
     "contract_version": "1.0.0",
-    "domain_profile": "consumer_health",
+    "domain_profile": {"domain_name": "consumer_health", "version": "1.0.0"},
     "mode": "friction",
     "layer_values": [0.7, 0.55, 0.65, 0.5],
     "result": {
         "m_score": 0.3842,
         "alert": None,
-        "severity": None,
+        "severity": 0,
         "mismatch_score": 0.15,
+        "spatial_component": 0.3842,
         "layer_attribution": {
             "vital_stability": 0.175,
             "metabolic_balance": 0.165,
             "activity_recovery": 0.13,
             "preventive_readiness": 0.125,
         },
-        "layer_coupling": [
-            {"pair": ["vital_stability", "metabolic_balance"], "delta": 0.15}
-        ],
-        "layer_visibility": {
-            "vital_stability": "visible",
-            "metabolic_balance": "visible",
-            "activity_recovery": "visible",
-            "preventive_readiness": "visible",
-        },
+        "layer_coupling": {"coherence": 0.72},
+        "layer_visibility": {"dominant": "Micro"},
+        "thresholds": {"detection": 0.42},
+        "overrides_applied": {},
     },
-    "audit": {"detection_ms": 1.2, "f_time": 1.0},
+    "audit": {"clamped_fields": [], "rejected_fields": []},
 }
 
 _EMERGENCE_ENVELOPE: dict[str, Any] = {
     "status": "ok",
     "contract_version": "1.0.0",
-    "domain_profile": "consumer_health",
+    "domain_profile": {"domain_name": "consumer_health", "version": "1.0.0"},
     "mode": "emergence",
     "layer_values": [0.7, 0.55, 0.65, 0.5],
     "result": {
@@ -157,17 +153,18 @@ _EMERGENCE_ENVELOPE: dict[str, Any] = {
         "alignment_floor": 0.5,
         "limiting_factor": "preventive_readiness",
         "recommended_action": None,
+        "spatial_component": 0.6025,
         "layer_attribution": {
             "vital_stability": 0.175,
             "metabolic_balance": 0.165,
             "activity_recovery": 0.13,
             "preventive_readiness": 0.125,
         },
-        "layer_coupling": [
-            {"pair": ["vital_stability", "metabolic_balance"], "delta": 0.15}
-        ],
+        "layer_coupling": {"coherence": 0.72},
+        "thresholds": {"detection": 0.42},
+        "overrides_applied": {},
     },
-    "audit": {"detection_ms": 0.8, "f_time": 1.0},
+    "audit": {"clamped_fields": [], "rejected_fields": []},
 }
 
 

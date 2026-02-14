@@ -186,17 +186,24 @@ def register_personal_health_signal_tools(
             # -----------------------------------------------------------
             # 3b. Build structured Mantic summary
             # -----------------------------------------------------------
-            coupling_list = friction_result.get("layer_coupling")
+            coupling_data = friction_result.get("layer_coupling")
+            # layer_coupling can be either:
+            #   - dict  {"coherence": 0.78}          (cip-mantic-core ≥ 1.0)
+            #   - list  [{"pair": [...], "delta": …}] (legacy / future)
+            if isinstance(coupling_data, dict):
+                coherence_val = coupling_data.get("coherence")
+            elif isinstance(coupling_data, list) and coupling_data:
+                first = coupling_data[0]
+                coherence_val = first.get("coherence") if isinstance(first, dict) else None
+            else:
+                coherence_val = None
+
             mantic_summary: dict[str, Any] = {
                 "friction_level": _friction_level_from_score(friction_result.get("m_score")),
                 "emergence_window": emergence_result.get("window_detected", False),
                 "limiting_factor": emergence_result.get("limiting_factor"),
                 "dominant_layer": (friction_result.get("layer_visibility") or {}).get("dominant"),
-                "coherence": (
-                    coupling_list[0].get("coherence")
-                    if isinstance(coupling_list, list) and coupling_list
-                    else None
-                ),
+                "coherence": coherence_val,
             }
 
             # -----------------------------------------------------------
