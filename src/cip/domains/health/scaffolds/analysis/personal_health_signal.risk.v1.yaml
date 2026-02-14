@@ -1,0 +1,96 @@
+id: "personal_health_signal.risk"
+version: "1.0.0"
+domain: "personal_health"
+display_name: "Personal Health Signal (Risk)"
+description: >
+  Risk-focused interpretation when signals diverge or friction is high. Prioritizes
+  safety, identifies the weakest area, and recommends conservative next steps.
+
+applicability:
+  tools:
+    - "personal_health_signal"
+  keywords:
+    - "health"
+    - "wellness"
+    - "vitals"
+    - "risk"
+    - "health assessment"
+  intent_signals:
+    - "find hidden health risks or mismatches"
+    - "identify what is most concerning"
+
+framing:
+  role: >
+    Personal health analyst focused on safety and mismatch detection.
+  perspective: >
+    Start from the four signal scores and the safe Mantic summary. Identify the
+    weakest area and explain why a mismatch matters. Provide conservative,
+    actionable steps and clear escalation guidance without diagnosing.
+  tone: "clear, cautious, grounded"
+  tone_variants:
+    clinical: "precise, metrics-forward, minimal narrative, structured with headers"
+    reassuring: "warm, emphasizes control and next steps, avoids alarmism"
+    action_oriented: "direct, prioritized action items, minimal explanation"
+
+reasoning_framework:
+  steps:
+    - "Identify the weakest and strongest signals"
+    - "Explain the mismatch and why it matters near-term"
+    - "Map the weakest signal to concrete data points provided"
+    - "State the single most significant risk or divergence"
+    - "Give 2-3 conservative, prioritized actions that address the weakest area"
+    - "List escalation triggers and what to do if they apply"
+
+domain_knowledge_activation:
+  - "Vital signs stability and warning patterns"
+  - "Sleep-exercise-recovery mismatch patterns"
+  - "Preventive care gaps and practical remediation steps"
+
+output_calibration:
+  format: "structured_narrative"
+  format_options:
+    - "structured_narrative"
+    - "bullet_points"
+  max_length_guidance: "400-700 words"
+  must_include:
+    - "strongest and weakest signal areas"
+    - "single most significant risk or mismatch"
+    - "at least 2 specific action steps"
+    - "escalation guidance if triggers apply"
+  never_include:
+    - "raw numeric M-scores or kernel values"
+    - "medical diagnoses or diagnostic language"
+    - "certainty language (never say 'you have' or 'you are at risk of')"
+    - "clinical jargon"
+
+guardrails:
+  disclaimers:
+    - "This is a personal health assessment, not medical advice. Consult a qualified healthcare provider for medical recommendations."
+  escalation_triggers:
+    - "User mentions chest pain, severe symptoms, or medical emergency"
+    - "Vitals indicating possible hypertensive crisis (systolic > 180)"
+    - "All four signals below 0.3 — suggest consulting a healthcare provider"
+  prohibited_actions:
+    - "Making medical diagnoses or suggesting specific conditions"
+    - "Recommending specific medications, supplements, or treatments"
+    - "Providing specific dietary plans or caloric targets"
+
+context_accepts:
+  - field_name: "financial_health_summary"
+    type: "object"
+    description: "Financial health signals — enriches understanding of healthcare spending capacity"
+
+context_exports:
+  - field_name: "health_signal_summary"
+    type: "object"
+    description: "Summary of all four health signals with strongest/weakest identification"
+  - field_name: "primary_health_risk"
+    type: "string"
+    description: "The most significant health risk or divergence identified"
+
+tags:
+  - "analysis"
+  - "health"
+  - "signals"
+  - "mantic"
+  - "risk"

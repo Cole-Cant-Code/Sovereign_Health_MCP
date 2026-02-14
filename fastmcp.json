@@ -1,0 +1,7 @@
+{
+  "name": "CIP Personal Health",
+  "description": "Consumer Intelligence Protocol — Personal Health domain server",
+  "server": "src/cip/core/server/app.py:mcp",
+  "transport": "streamable-http",
+  "port": 8001
+}

@@ -1,0 +1,45 @@
+domain_name: consumer_health
+version: "1.0.0"
+display_name: "Consumer Health"
+description: >
+  Personal health domain profile for the CIP Health data bank.
+  Four layers map consumer health signals: physiological stability,
+  metabolic balance, activity/recovery patterns, and preventive care
+  engagement. Weights encode consumer health theory where metabolic
+  balance (0.30) is the most structural long-term predictor.
+
+layer_names:
+  - vital_stability
+  - metabolic_balance
+  - activity_recovery
+  - preventive_readiness
+
+weights:
+  - 0.25
+  - 0.30
+  - 0.20
+  - 0.25
+
+hierarchy:
+  vital_stability: Micro
+  metabolic_balance: Macro
+  activity_recovery: Meso
+  preventive_readiness: Meso
+
+thresholds:
+  detection: 0.42
+
+temporal_allowlist:
+  - linear
+  - memory
+  - s_curve
+
+guardrails:
+  disclaimers:
+    - "Health signal analysis is not medical advice."
+  prohibited_actions:
+    - "Making medical diagnoses"
+    - "Recommending specific medications or treatments"
+  escalation_triggers:
+    - "All four signals below 0.3"
+    - "Vitals indicating hypertensive crisis (systolic > 180)"
