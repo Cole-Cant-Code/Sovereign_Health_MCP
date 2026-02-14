@@ -12,6 +12,7 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
+from cip.core.audit.logger import AuditLogger
 from cip.core.config.settings import get_settings
 from cip.core.llm.client import InnerLLMClient
 from cip.core.llm.provider import create_provider
@@ -100,7 +101,7 @@ def create_app(
         api_key=api_key,
         model=model,
     )
-    llm_client = InnerLLMClient(provider=provider)
+    llm_client = InnerLLMClient(provider=provider, provider_name=provider_name)
 
     # --- Initialize Mantic MCP client (cip-mantic-core) ---
     if mantic_client_override is not None:
@@ -121,6 +122,9 @@ def create_app(
 
     # --- Initialize encrypted storage (health data bank) ---
     repository: HealthRepository | None = None
+    health_db: HealthDatabase | None = None
+    audit_logger: AuditLogger | None = None
+
     if repository_override is not None:
         repository = repository_override
     elif settings.encryption_key:
@@ -143,6 +147,26 @@ def create_app(
             "Set ENCRYPTION_KEY to enable the health data bank."
         )
 
+    # --- Initialize audit logger (requires database) ---
+    if health_db is not None:
+        audit_logger = AuditLogger(health_db)
+        logger.info("Audit logger initialized")
+
+    # --- Auto-purge on startup (data retention policy) ---
+    if repository is not None and settings.data_retention_days > 0:
+        purged = repository.purge_before_days(settings.data_retention_days)
+        if purged > 0:
+            logger.info(
+                "Data retention: purged %d snapshots older than %d days",
+                purged, settings.data_retention_days,
+            )
+            if audit_logger is not None:
+                audit_logger.log_data_delete(
+                    tool_name="auto_retention_purge",
+                    count=purged,
+                    metadata={"retention_days": settings.data_retention_days},
+                )
+
     # --- Register tools ---
     @server.tool
     def health_check() -> dict:
@@ -161,7 +185,8 @@ def create_app(
 
     # --- Register Mantic health signal tools (MCP-to-MCP via cip-mantic-core) ---
     register_personal_health_signal_tools(
-        server, engine, llm_client, health_provider, mantic_client, repository
+        server, engine, llm_client, health_provider, mantic_client, repository,
+        audit_logger=audit_logger,
     )
     logger.info("Personal health signal tools registered (MCP-to-MCP via cip-mantic-core)")
 
@@ -169,7 +194,7 @@ def create_app(
     if repository is not None:
         from cip.domains.health.tools.manual_entry_tools import register_manual_entry_tools
 
-        register_manual_entry_tools(server, repository)
+        register_manual_entry_tools(server, repository, audit_logger=audit_logger)
         logger.info("Manual entry tools registered")
 
         # --- Register longitudinal trend tools (requires storage) ---
@@ -177,8 +202,28 @@ def create_app(
         from cip.domains.health.tools.health_trend_tools import register_health_trend_tools
 
         trend_analyzer = TrendAnalyzer(repository)
-        register_health_trend_tools(server, engine, llm_client, trend_analyzer)
+        register_health_trend_tools(
+            server, engine, llm_client, trend_analyzer, audit_logger=audit_logger,
+        )
         logger.info("Health trend analysis tools registered")
+
+    # --- Register audit summary tool (requires audit logger) ---
+    if audit_logger is not None:
+        from cip.domains.health.tools.audit_tools import register_audit_tools
+
+        register_audit_tools(server, audit_logger)
+        logger.info("Audit tools registered")
+
+    # --- Register data management tools (requires storage) ---
+    if repository is not None:
+        from cip.domains.health.tools.data_management_tools import (
+            register_data_management_tools,
+        )
+
+        register_data_management_tools(
+            server, repository, audit_logger=audit_logger,
+        )
+        logger.info("Data management tools registered")
 
     # --- Register resources ---
     register_health_scaffold_resources(server, registry)

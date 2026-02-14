@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from fastmcp import Context, FastMCP
 
 if TYPE_CHECKING:
+    from cip.core.audit.logger import AuditLogger
     from cip.core.llm.client import InnerLLMClient
     from cip.core.mantic.client import ManticMCPClient
     from cip.core.scaffold.engine import ScaffoldEngine
@@ -92,6 +94,7 @@ def register_personal_health_signal_tools(
     health_data_provider: HealthDataProvider,
     mantic_client: ManticMCPClient,
     repository: HealthRepository | None = None,
+    audit_logger: AuditLogger | None = None,
 ) -> None:
     """Register personal health signal tools on the MCP server.
 
@@ -135,215 +138,250 @@ def register_personal_health_signal_tools(
             include_mantic_raw: Include raw Mantic outputs in explicit mode.
                 Forced to False when privacy_mode is 'strict'.
         """
+        start_time = time.monotonic()
+        snapshot_id: str | None = None
+
         effective_privacy_mode = _validate_privacy_mode(privacy_mode)
         effective_store_mode = store_mode if store_mode in ("encrypted", "none") else "encrypted"
         if effective_privacy_mode == "strict":
             include_mantic_raw = False
-        # ---------------------------------------------------------------
-        # 1. Gather data (5 async calls)
-        # ---------------------------------------------------------------
-        vitals_data = await health_data_provider.get_vitals(period)
-        lab_results = await health_data_provider.get_lab_results()
-        activity_data = await health_data_provider.get_activity_data(period)
-        preventive_care = await health_data_provider.get_preventive_care()
-        biometrics = await health_data_provider.get_biometrics()
 
-        # ---------------------------------------------------------------
-        # 2. Translate to Mantic signals (deterministic, no LLM)
-        # ---------------------------------------------------------------
-        signals = translate_health_to_mantic(
-            vitals_data=vitals_data,
-            lab_results=lab_results,
-            activity_data=activity_data,
-            preventive_care=preventive_care,
-            biometrics=biometrics,
-        )
-        layer_values = signals.as_layer_values()
+        try:
+            # -----------------------------------------------------------
+            # 1. Gather data (5 async calls)
+            # -----------------------------------------------------------
+            vitals_data = await health_data_provider.get_vitals(period)
+            lab_results = await health_data_provider.get_lab_results()
+            activity_data = await health_data_provider.get_activity_data(period)
+            preventive_care = await health_data_provider.get_preventive_care()
+            biometrics = await health_data_provider.get_biometrics()
 
-        # ---------------------------------------------------------------
-        # 3. Run Mantic detection via cip-mantic-core (both modes)
-        # ---------------------------------------------------------------
-        friction_envelope = await mantic_client.detect_friction(
-            profile_name=PROFILE_NAME,
-            layer_values=layer_values,
-        )
-        friction_result = friction_envelope["result"]
+            # -----------------------------------------------------------
+            # 2. Translate to Mantic signals (deterministic, no LLM)
+            # -----------------------------------------------------------
+            signals = translate_health_to_mantic(
+                vitals_data=vitals_data,
+                lab_results=lab_results,
+                activity_data=activity_data,
+                preventive_care=preventive_care,
+                biometrics=biometrics,
+            )
+            layer_values = signals.as_layer_values()
 
-        emergence_envelope = await mantic_client.detect_emergence(
-            profile_name=PROFILE_NAME,
-            layer_values=layer_values,
-        )
-        emergence_result = emergence_envelope["result"]
+            # -----------------------------------------------------------
+            # 3. Run Mantic detection via cip-mantic-core (both modes)
+            # -----------------------------------------------------------
+            friction_envelope = await mantic_client.detect_friction(
+                profile_name=PROFILE_NAME,
+                layer_values=layer_values,
+            )
+            friction_result = friction_envelope["result"]
 
-        # ---------------------------------------------------------------
-        # 3b. Build structured Mantic summary (for scaffold routing + LLM)
-        # ---------------------------------------------------------------
-        coupling_list = friction_result.get("layer_coupling")
-        mantic_summary: dict[str, Any] = {
-            "friction_level": _friction_level_from_score(friction_result.get("m_score")),
-            "emergence_window": emergence_result.get("window_detected", False),
-            "limiting_factor": emergence_result.get("limiting_factor"),
-            "dominant_layer": (friction_result.get("layer_visibility") or {}).get("dominant"),
-            "coherence": (
-                coupling_list[0].get("coherence")
-                if isinstance(coupling_list, list) and coupling_list
-                else None
-            ),
-        }
+            emergence_envelope = await mantic_client.detect_emergence(
+                profile_name=PROFILE_NAME,
+                layer_values=layer_values,
+            )
+            emergence_result = emergence_envelope["result"]
 
-        # ---------------------------------------------------------------
-        # 4. Build full data_context (all metrics — privacy filter applied later)
-        # ---------------------------------------------------------------
-        data_context: dict[str, Any] = {
-            "period": period,
-            "resting_heart_rate": vitals_data.get("resting_heart_rate", {}).get("current_bpm"),
-            "blood_pressure_systolic": vitals_data.get("blood_pressure", {}).get("systolic_avg"),
-            "blood_pressure_diastolic": vitals_data.get("blood_pressure", {}).get("diastolic_avg"),
-            "hrv_ms": vitals_data.get("hrv", {}).get("avg_ms"),
-            "exercise_sessions_per_week": activity_data.get("exercise", {}).get(
-                "sessions_per_week"
-            ),
-            "sleep_duration_hours": activity_data.get("sleep", {}).get("avg_duration_hours"),
-            "bmi": biometrics.get("bmi"),
-            "lab_count": len(lab_results),
-            "signals": {
-                name: round(value, 4)
-                for name, value in zip(LAYER_NAMES, layer_values)
-            },
-            "signal_details": signals.details,
-            "mantic_summary": mantic_summary,
-            "mantic_raw": {"friction": friction_result, "emergence": emergence_result},
-            "friction": {
-                "m_score": friction_result.get("m_score"),
-                "detected": friction_result.get("alert") is not None,
-                "layer_attribution": friction_result.get("layer_attribution"),
-                "layer_coupling": friction_result.get("layer_coupling"),
-                "layer_visibility": friction_result.get("layer_visibility"),
-            },
-            "emergence": {
-                "m_score": emergence_result.get("m_score"),
-                "detected": emergence_result.get("window_detected", False),
-                "window_type": emergence_result.get("window_type"),
-                "alignment_floor": emergence_result.get("alignment_floor"),
-                "layer_attribution": emergence_result.get("layer_attribution"),
-                "layer_coupling": emergence_result.get("layer_coupling"),
-            },
-            **health_data_provider.get_provenance(),
-        }
+            # -----------------------------------------------------------
+            # 3b. Build structured Mantic summary
+            # -----------------------------------------------------------
+            coupling_list = friction_result.get("layer_coupling")
+            mantic_summary: dict[str, Any] = {
+                "friction_level": _friction_level_from_score(friction_result.get("m_score")),
+                "emergence_window": emergence_result.get("window_detected", False),
+                "limiting_factor": emergence_result.get("limiting_factor"),
+                "dominant_layer": (friction_result.get("layer_visibility") or {}).get("dominant"),
+                "coherence": (
+                    coupling_list[0].get("coherence")
+                    if isinstance(coupling_list, list) and coupling_list
+                    else None
+                ),
+            }
 
-        # Deterministic context exports (for cross-domain sharing)
-        data_context.update(
-            _compute_exports(signals=data_context["signals"], mantic_summary=mantic_summary)
-        )
+            # -----------------------------------------------------------
+            # 4. Build full data_context
+            # -----------------------------------------------------------
+            data_context: dict[str, Any] = {
+                "period": period,
+                "resting_heart_rate": vitals_data.get("resting_heart_rate", {}).get("current_bpm"),
+                "blood_pressure_systolic": vitals_data.get("blood_pressure", {}).get("systolic_avg"),
+                "blood_pressure_diastolic": vitals_data.get("blood_pressure", {}).get("diastolic_avg"),
+                "hrv_ms": vitals_data.get("hrv", {}).get("avg_ms"),
+                "exercise_sessions_per_week": activity_data.get("exercise", {}).get(
+                    "sessions_per_week"
+                ),
+                "sleep_duration_hours": activity_data.get("sleep", {}).get("avg_duration_hours"),
+                "bmi": biometrics.get("bmi"),
+                "lab_count": len(lab_results),
+                "signals": {
+                    name: round(value, 4)
+                    for name, value in zip(LAYER_NAMES, layer_values)
+                },
+                "signal_details": signals.details,
+                "mantic_summary": mantic_summary,
+                "mantic_raw": {"friction": friction_result, "emergence": emergence_result},
+                "friction": {
+                    "m_score": friction_result.get("m_score"),
+                    "detected": friction_result.get("alert") is not None,
+                    "layer_attribution": friction_result.get("layer_attribution"),
+                    "layer_coupling": friction_result.get("layer_coupling"),
+                    "layer_visibility": friction_result.get("layer_visibility"),
+                },
+                "emergence": {
+                    "m_score": emergence_result.get("m_score"),
+                    "detected": emergence_result.get("window_detected", False),
+                    "window_type": emergence_result.get("window_type"),
+                    "alignment_floor": emergence_result.get("alignment_floor"),
+                    "layer_attribution": emergence_result.get("layer_attribution"),
+                    "layer_coupling": emergence_result.get("layer_coupling"),
+                },
+                **health_data_provider.get_provenance(),
+            }
 
-        # ---------------------------------------------------------------
-        # 4b. Inject historical context (if snapshots exist)
-        # ---------------------------------------------------------------
-        if repository is not None:
-            try:
-                snapshot_count = repository.count_snapshots()
-                if snapshot_count > 1:
-                    from cip.domains.health.domain_logic.trend_analyzer import TrendAnalyzer
-
-                    trend_analyzer = TrendAnalyzer(repository)
-                    signal_trends = {}
-                    for sname in LAYER_NAMES:
-                        signal_trends[sname] = trend_analyzer.compute_signal_trend(sname)
-                    divergences = trend_analyzer.detect_divergence_patterns()
-
-                    data_context["historical"] = {
-                        "snapshots_available": snapshot_count,
-                        "signal_trends": signal_trends,
-                        "divergence_patterns": divergences,
-                    }
-                    logger.info(
-                        "Injected historical context: %d snapshots, %d divergences",
-                        snapshot_count, len(divergences),
-                    )
-            except Exception:
-                logger.exception("Failed to compute historical context — continuing without it")
-
-        # ---------------------------------------------------------------
-        # 5. Select scaffold -> privacy filter -> apply -> invoke LLM
-        # ---------------------------------------------------------------
-        tool_context = {"mantic_summary": mantic_summary}
-        scaffold = engine.select(
-            tool_name="personal_health_signal",
-            user_input=period,
-            caller_scaffold_id=scaffold_id,
-            tool_context=tool_context,
-        )
-
-        xd_context = None
-        if cross_domain_context:
-            try:
-                xd_context = json.loads(cross_domain_context)
-            except (json.JSONDecodeError, TypeError):
-                logger.warning(
-                    "Invalid cross_domain_context JSON, ignoring input"
-                )
-
-        # Apply privacy filter — only the filtered context reaches the LLM prompt
-        llm_data_context = build_llm_data_context(
-            full_data_context=data_context,
-            privacy_mode=effective_privacy_mode,
-            include_mantic_raw=include_mantic_raw,
-        )
-
-        assembled = engine.apply(
-            scaffold=scaffold,
-            user_query=f"Assess my personal health for {period}",
-            data_context=llm_data_context,
-            cross_domain_context=xd_context,
-            tone_variant=tone_variant,
-            output_format=output_format,
-        )
-
-        response = await llm_client.invoke(
-            assembled_prompt=assembled,
-            scaffold=scaffold,
-            data_context=llm_data_context,
-        )
-
-        if response.guardrail_flags:
-            logger.warning(
-                "Guardrail flags on personal_health_signal: %s",
-                response.guardrail_flags,
+            # Deterministic context exports (for cross-domain sharing)
+            data_context.update(
+                _compute_exports(signals=data_context["signals"], mantic_summary=mantic_summary)
             )
 
-        # ---------------------------------------------------------------
-        # 6. Persist snapshot to health data bank (if storage enabled)
-        # ---------------------------------------------------------------
-        if repository is not None and effective_store_mode != "none":
-            try:
-                from datetime import datetime, timezone
+            # -----------------------------------------------------------
+            # 4b. Inject historical context (if snapshots exist)
+            # -----------------------------------------------------------
+            if repository is not None:
+                try:
+                    snapshot_count = repository.count_snapshots()
+                    if snapshot_count > 1:
+                        from cip.domains.health.domain_logic.trend_analyzer import TrendAnalyzer
 
-                from cip.core.storage.models import HealthSnapshot
+                        trend_analyzer = TrendAnalyzer(repository)
+                        signal_trends = {}
+                        for sname in LAYER_NAMES:
+                            signal_trends[sname] = trend_analyzer.compute_signal_trend(sname)
+                        divergences = trend_analyzer.detect_divergence_patterns()
 
-                snapshot = HealthSnapshot(
-                    id="",  # auto-generated UUID
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                    source=health_data_provider.data_source,
-                    period=period,
-                    vitals_data=vitals_data,
-                    labs_data=lab_results,
-                    activity_data=activity_data,
-                    preventive_data=preventive_care,
-                    biometrics_data=biometrics,
-                    vital_stability=layer_values[0],
-                    metabolic_balance=layer_values[1],
-                    activity_recovery=layer_values[2],
-                    preventive_readiness=layer_values[3],
-                    friction_m_score=friction_result.get("m_score"),
-                    friction_detected=friction_result.get("alert") is not None,
-                    emergence_m_score=emergence_result.get("m_score"),
-                    emergence_detected=emergence_result.get("window_detected", False),
-                    emergence_window_type=emergence_result.get("window_type"),
-                    provenance=health_data_provider.get_provenance(),
+                        data_context["historical"] = {
+                            "snapshots_available": snapshot_count,
+                            "signal_trends": signal_trends,
+                            "divergence_patterns": divergences,
+                        }
+                        logger.info(
+                            "Injected historical context: %d snapshots, %d divergences",
+                            snapshot_count, len(divergences),
+                        )
+                except Exception:
+                    logger.exception("Failed to compute historical context — continuing without it")
+
+            # -----------------------------------------------------------
+            # 5. Select scaffold -> privacy filter -> apply -> invoke LLM
+            # -----------------------------------------------------------
+            tool_context = {"mantic_summary": mantic_summary}
+            scaffold = engine.select(
+                tool_name="personal_health_signal",
+                user_input=period,
+                caller_scaffold_id=scaffold_id,
+                tool_context=tool_context,
+            )
+
+            xd_context = None
+            if cross_domain_context:
+                try:
+                    xd_context = json.loads(cross_domain_context)
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Invalid cross_domain_context JSON, ignoring input"
+                    )
+
+            # Apply privacy filter
+            llm_data_context = build_llm_data_context(
+                full_data_context=data_context,
+                privacy_mode=effective_privacy_mode,
+                include_mantic_raw=include_mantic_raw,
+            )
+
+            assembled = engine.apply(
+                scaffold=scaffold,
+                user_query=f"Assess my personal health for {period}",
+                data_context=llm_data_context,
+                cross_domain_context=xd_context,
+                tone_variant=tone_variant,
+                output_format=output_format,
+            )
+
+            response = await llm_client.invoke(
+                assembled_prompt=assembled,
+                scaffold=scaffold,
+                data_context=llm_data_context,
+            )
+
+            if response.guardrail_flags:
+                logger.warning(
+                    "Guardrail flags on personal_health_signal: %s",
+                    response.guardrail_flags,
                 )
-                snapshot_id = repository.save_snapshot(snapshot)
-                logger.info("Persisted health snapshot %s", snapshot_id)
-            except Exception:
-                logger.exception("Failed to persist health snapshot — continuing")
 
-        return response.content
+            # -----------------------------------------------------------
+            # 6. Persist snapshot to health data bank (if storage enabled)
+            # -----------------------------------------------------------
+            if repository is not None and effective_store_mode != "none":
+                try:
+                    from datetime import datetime, timezone
+
+                    from cip.core.storage.models import HealthSnapshot
+
+                    snapshot = HealthSnapshot(
+                        id="",  # auto-generated UUID
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        source=health_data_provider.data_source,
+                        period=period,
+                        vitals_data=vitals_data,
+                        labs_data=lab_results,
+                        activity_data=activity_data,
+                        preventive_data=preventive_care,
+                        biometrics_data=biometrics,
+                        vital_stability=layer_values[0],
+                        metabolic_balance=layer_values[1],
+                        activity_recovery=layer_values[2],
+                        preventive_readiness=layer_values[3],
+                        friction_m_score=friction_result.get("m_score"),
+                        friction_detected=friction_result.get("alert") is not None,
+                        emergence_m_score=emergence_result.get("m_score"),
+                        emergence_detected=emergence_result.get("window_detected", False),
+                        emergence_window_type=emergence_result.get("window_type"),
+                        provenance=health_data_provider.get_provenance(),
+                    )
+                    snapshot_id = repository.save_snapshot(snapshot)
+                    logger.info("Persisted health snapshot %s", snapshot_id)
+                except Exception:
+                    logger.exception("Failed to persist health snapshot — continuing")
+
+            # -----------------------------------------------------------
+            # 7. Audit log (success)
+            # -----------------------------------------------------------
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            if audit_logger is not None:
+                audit_logger.log_tool_call(
+                    tool_name="personal_health_signal",
+                    tool_input={"period": period, "privacy_mode": effective_privacy_mode},
+                    privacy_mode=effective_privacy_mode,
+                    llm_provider=llm_client.provider_name,
+                    llm_disclosed=(llm_client.provider_name != "mock"),
+                    snapshot_id=snapshot_id,
+                    duration_ms=elapsed_ms,
+                )
+
+            return response.content
+
+        except Exception as exc:
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            if audit_logger is not None:
+                audit_logger.log_tool_call(
+                    tool_name="personal_health_signal",
+                    tool_input={"period": period, "privacy_mode": effective_privacy_mode},
+                    privacy_mode=effective_privacy_mode,
+                    llm_provider=llm_client.provider_name,
+                    llm_disclosed=False,
+                    duration_ms=elapsed_ms,
+                    status="failure",
+                    error_type=type(exc).__name__,
+                )
+            raise

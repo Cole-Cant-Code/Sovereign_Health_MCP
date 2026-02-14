@@ -47,6 +47,7 @@ class TestSchema:
             "vital_readings",
             "data_sources",
             "schema_version",
+            "audit_log",
         }
         with HealthDatabase(":memory:") as db:
             cursor = db.connection.execute(
@@ -64,6 +65,9 @@ class TestSchema:
             "idx_labs_snapshot",
             "idx_vitals_metric",
             "idx_vitals_snapshot",
+            "idx_audit_timestamp",
+            "idx_audit_action",
+            "idx_audit_tool",
         }
         with HealthDatabase(":memory:") as db:
             cursor = db.connection.execute(

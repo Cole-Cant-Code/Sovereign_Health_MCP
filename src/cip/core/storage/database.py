@@ -12,7 +12,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Current schema version
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # ---------------------------------------------------------------------------
 # Schema DDL
@@ -97,6 +97,32 @@ CREATE INDEX IF NOT EXISTS idx_vitals_metric      ON vital_readings(metric);
 CREATE INDEX IF NOT EXISTS idx_vitals_snapshot    ON vital_readings(snapshot_id);
 """
 
+# ---------------------------------------------------------------------------
+# V2: Audit log table (HIPAA compliance — access logging + LLM disclosure)
+# ---------------------------------------------------------------------------
+
+_SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS audit_log (
+    id              TEXT PRIMARY KEY,
+    timestamp       TEXT NOT NULL DEFAULT (datetime('now')),
+    action          TEXT NOT NULL,
+    tool_name       TEXT,
+    tool_input_hash TEXT,
+    privacy_mode    TEXT,
+    llm_provider    TEXT,
+    llm_disclosed   INTEGER DEFAULT 0,
+    snapshot_id     TEXT,
+    duration_ms     REAL,
+    status          TEXT NOT NULL DEFAULT 'success',
+    error_type      TEXT,
+    metadata_json   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_action    ON audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_audit_tool      ON audit_log(tool_name);
+"""
+
 
 class DatabaseError(Exception):
     """Raised when database operations fail."""
@@ -161,15 +187,23 @@ class HealthDatabase:
         logger.info("Health database initialized: %s", self._db_path)
 
     def _ensure_schema(self) -> None:
-        """Create tables if they don't exist and record schema version."""
+        """Create tables if they don't exist and apply migrations."""
         conn = self.connection
+
+        # V1: Core tables (always applied — CREATE IF NOT EXISTS is idempotent)
         conn.executescript(_SCHEMA_V1)
 
-        # Check if version is already recorded
+        # Check current version
         cursor = conn.execute("SELECT MAX(version) FROM schema_version")
         row = cursor.fetchone()
         current_version = row[0] if row[0] is not None else 0
 
+        # V2: Audit log table
+        if current_version < 2:
+            conn.executescript(_SCHEMA_V2)
+            logger.info("Applied schema migration V2: audit_log table")
+
+        # Record schema version
         if current_version < SCHEMA_VERSION:
             conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?)",

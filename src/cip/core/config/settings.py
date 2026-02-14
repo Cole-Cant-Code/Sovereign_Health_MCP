@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # Privacy
     default_privacy_mode: str = "strict"
 
+    # Data retention (0 = keep forever, no auto-purge)
+    data_retention_days: int = 0
+
     # Connectors
     apple_health_export_path: str = ""
 

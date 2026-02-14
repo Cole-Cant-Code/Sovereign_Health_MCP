@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from cip.core.storage.database import HealthDatabase
@@ -359,6 +359,109 @@ class HealthRepository:
             )
             for row in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Deletion / data retention (HIPAA: right to deletion)
+    # ------------------------------------------------------------------
+
+    def delete_snapshot(self, snapshot_id: str) -> bool:
+        """Delete a single snapshot and its denormalized data.
+
+        Args:
+            snapshot_id: The snapshot to delete.
+
+        Returns:
+            True if a snapshot was found and deleted, False otherwise.
+        """
+        conn = self._db.connection
+        row = conn.execute(
+            "SELECT id FROM health_snapshots WHERE id = ?", (snapshot_id,)
+        ).fetchone()
+        if row is None:
+            return False
+
+        # Delete denormalized data first (FK references)
+        conn.execute("DELETE FROM lab_results WHERE snapshot_id = ?", (snapshot_id,))
+        conn.execute("DELETE FROM vital_readings WHERE snapshot_id = ?", (snapshot_id,))
+        conn.execute("DELETE FROM health_snapshots WHERE id = ?", (snapshot_id,))
+        conn.commit()
+        logger.info("Deleted snapshot %s", snapshot_id)
+        return True
+
+    def purge_before(self, before_timestamp: str) -> int:
+        """Delete all snapshots older than a given timestamp.
+
+        Also removes associated lab_results and vital_readings.
+
+        Args:
+            before_timestamp: ISO 8601 timestamp. Snapshots with
+                ``timestamp < before_timestamp`` are deleted.
+
+        Returns:
+            Number of snapshots deleted.
+        """
+        conn = self._db.connection
+
+        # Find affected snapshot IDs
+        rows = conn.execute(
+            "SELECT id FROM health_snapshots WHERE timestamp < ?",
+            (before_timestamp,),
+        ).fetchall()
+        snapshot_ids = [row[0] for row in rows]
+
+        if not snapshot_ids:
+            return 0
+
+        placeholders = ",".join("?" for _ in snapshot_ids)
+        conn.execute(
+            f"DELETE FROM lab_results WHERE snapshot_id IN ({placeholders})",
+            snapshot_ids,
+        )
+        conn.execute(
+            f"DELETE FROM vital_readings WHERE snapshot_id IN ({placeholders})",
+            snapshot_ids,
+        )
+        conn.execute(
+            f"DELETE FROM health_snapshots WHERE id IN ({placeholders})",
+            snapshot_ids,
+        )
+        conn.commit()
+        logger.info("Purged %d snapshots older than %s", len(snapshot_ids), before_timestamp)
+        return len(snapshot_ids)
+
+    def purge_before_days(self, days: int) -> int:
+        """Delete all snapshots older than N days.
+
+        Convenience wrapper around :meth:`purge_before`.
+
+        Args:
+            days: Number of days. Snapshots older than ``now - days`` are deleted.
+
+        Returns:
+            Number of snapshots deleted.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        return self.purge_before(cutoff)
+
+    def delete_all_data(self) -> int:
+        """Delete ALL health data — nuclear option.
+
+        Removes all snapshots, lab results, vital readings, and data sources.
+
+        Returns:
+            Total number of snapshot rows deleted.
+        """
+        conn = self._db.connection
+        count_row = conn.execute("SELECT COUNT(*) FROM health_snapshots").fetchone()
+        count = count_row[0]
+
+        conn.execute("DELETE FROM lab_results")
+        conn.execute("DELETE FROM vital_readings")
+        conn.execute("DELETE FROM health_snapshots")
+        conn.execute("DELETE FROM data_sources")
+        conn.commit()
+        logger.warning("Deleted ALL health data: %d snapshots removed", count)
+        return count
 
     # ------------------------------------------------------------------
     # Data sources

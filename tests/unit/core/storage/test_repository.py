@@ -323,3 +323,95 @@ class TestDataSources:
 
         assert len(repo.get_data_sources(active_only=True)) == 1
         assert len(repo.get_data_sources(active_only=False)) == 2
+
+
+# ---------------------------------------------------------------------------
+# Deletion / data retention
+# ---------------------------------------------------------------------------
+
+class TestDeleteSnapshot:
+    def test_delete_existing_snapshot(self, repo):
+        sid = repo.save_snapshot(_make_snapshot())
+        assert repo.count_snapshots() == 1
+
+        result = repo.delete_snapshot(sid)
+        assert result is True
+        assert repo.count_snapshots() == 0
+
+    def test_delete_nonexistent_returns_false(self, repo):
+        assert repo.delete_snapshot("nonexistent-id") is False
+
+    def test_delete_removes_denormalized_data(self, repo):
+        sid = repo.save_snapshot(_make_snapshot(
+            vitals_data={
+                "resting_heart_rate": {"current_bpm": 68},
+                "blood_pressure": {"systolic_avg": 122, "diastolic_avg": 78},
+            },
+            labs_data=[
+                {"test_name": "Glucose", "value": 95.0, "unit": "mg/dL",
+                 "date": "2026-01-10"},
+            ],
+        ))
+
+        # Verify denormalized data exists
+        assert len(repo.get_vital_history("resting_heart_rate")) == 1
+        assert len(repo.get_lab_history("Glucose")) == 1
+
+        repo.delete_snapshot(sid)
+
+        # Denormalized data should be gone
+        assert len(repo.get_vital_history("resting_heart_rate")) == 0
+        assert len(repo.get_lab_history("Glucose")) == 0
+
+
+class TestPurgeBefore:
+    def test_purge_old_snapshots(self, repo):
+        repo.save_snapshot(_make_snapshot(timestamp="2025-01-01T00:00:00Z"))
+        repo.save_snapshot(_make_snapshot(timestamp="2025-06-01T00:00:00Z"))
+        repo.save_snapshot(_make_snapshot(timestamp="2026-02-01T00:00:00Z"))
+
+        purged = repo.purge_before("2026-01-01T00:00:00Z")
+        assert purged == 2
+        assert repo.count_snapshots() == 1
+
+    def test_purge_when_nothing_old(self, repo):
+        repo.save_snapshot(_make_snapshot(timestamp="2026-02-01T00:00:00Z"))
+        purged = repo.purge_before("2026-01-01T00:00:00Z")
+        assert purged == 0
+        assert repo.count_snapshots() == 1
+
+    def test_purge_empty_db(self, repo):
+        assert repo.purge_before("2030-01-01T00:00:00Z") == 0
+
+    def test_purge_before_days(self, repo):
+        # Insert a snapshot with a very old timestamp
+        repo.save_snapshot(_make_snapshot(timestamp="2020-01-01T00:00:00Z"))
+        repo.save_snapshot(_make_snapshot(timestamp="2026-02-01T00:00:00Z"))
+
+        purged = repo.purge_before_days(365)
+        # The 2020 snapshot should be purged, the 2026 one should remain
+        assert purged == 1
+        assert repo.count_snapshots() == 1
+
+
+class TestDeleteAllData:
+    def test_delete_all(self, repo):
+        repo.save_snapshot(_make_snapshot())
+        repo.save_snapshot(_make_snapshot())
+        repo.save_snapshot(_make_snapshot())
+
+        count = repo.delete_all_data()
+        assert count == 3
+        assert repo.count_snapshots() == 0
+
+    def test_delete_all_empty_db(self, repo):
+        assert repo.delete_all_data() == 0
+
+    def test_delete_all_removes_data_sources(self, repo):
+        repo.upsert_data_source(DataSource(
+            id="ds-1", source_type="mock", display_name="Mock",
+        ))
+        assert len(repo.get_data_sources(active_only=False)) == 1
+
+        repo.delete_all_data()
+        assert len(repo.get_data_sources(active_only=False)) == 0

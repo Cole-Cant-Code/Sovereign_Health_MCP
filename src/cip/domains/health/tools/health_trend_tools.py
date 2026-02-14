@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from fastmcp import Context, FastMCP
 
 if TYPE_CHECKING:
+    from cip.core.audit.logger import AuditLogger
     from cip.core.llm.client import InnerLLMClient
     from cip.core.scaffold.engine import ScaffoldEngine
     from cip.domains.health.domain_logic.trend_analyzer import TrendAnalyzer
@@ -25,6 +27,7 @@ def register_health_trend_tools(
     engine: ScaffoldEngine,
     llm_client: InnerLLMClient,
     trend_analyzer: TrendAnalyzer,
+    audit_logger: AuditLogger | None = None,
 ) -> None:
     """Register longitudinal health trend analysis tools on the MCP server."""
 
@@ -46,6 +49,7 @@ def register_health_trend_tools(
             scaffold_id: Optional scaffold override.
             tone_variant: Optional tone override.
         """
+        start_time = time.monotonic()
         summary = trend_analyzer.get_snapshot_summary()
 
         if summary["snapshots_available"] < 2:
@@ -102,6 +106,17 @@ def register_health_trend_tools(
             data_context=data_context,
         )
 
+        # Audit log
+        elapsed_ms = (time.monotonic() - start_time) * 1000
+        if audit_logger is not None:
+            audit_logger.log_tool_call(
+                tool_name="health_trend_analysis",
+                tool_input={"days": days},
+                llm_provider=llm_client.provider_name,
+                llm_disclosed=(llm_client.provider_name != "mock"),
+                duration_ms=elapsed_ms,
+            )
+
         return response.content
 
     @mcp.tool
@@ -116,5 +131,16 @@ def register_health_trend_tools(
             test_name: Name of the lab test (e.g., 'Fasting Glucose', 'LDL Cholesterol').
             limit: Maximum number of historical readings to include.
         """
+        start_time = time.monotonic()
         trend = trend_analyzer.compute_lab_trend(test_name, limit=limit)
+
+        if audit_logger is not None:
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            audit_logger.log_tool_call(
+                tool_name="lab_trend",
+                tool_input={"test_name": test_name, "limit": limit},
+                llm_disclosed=False,
+                duration_ms=elapsed_ms,
+            )
+
         return json.dumps(trend, indent=2)

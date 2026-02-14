@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from fastmcp import Context, FastMCP
 
 if TYPE_CHECKING:
+    from cip.core.audit.logger import AuditLogger
     from cip.core.storage.repository import HealthRepository
 
 from cip.core.storage.models import HealthSnapshot
@@ -22,9 +24,28 @@ from cip.core.storage.models import HealthSnapshot
 logger = logging.getLogger(__name__)
 
 
+def _audit_manual_entry(
+    audit_logger: AuditLogger | None,
+    tool_name: str,
+    snapshot_id: str,
+    start_time: float,
+) -> None:
+    """Log a manual data entry event to the audit trail."""
+    if audit_logger is not None:
+        elapsed_ms = (time.monotonic() - start_time) * 1000
+        audit_logger.log_tool_call(
+            tool_name=tool_name,
+            tool_input={"snapshot_id": snapshot_id},
+            llm_disclosed=False,
+            snapshot_id=snapshot_id,
+            duration_ms=elapsed_ms,
+        )
+
+
 def register_manual_entry_tools(
     mcp: FastMCP,
     repository: HealthRepository,
+    audit_logger: AuditLogger | None = None,
 ) -> None:
     """Register manual health data entry tools on the MCP server."""
 
@@ -48,6 +69,7 @@ def register_manual_entry_tools(
             status: Result status (e.g., 'normal', 'borderline_high', 'above_optimal').
             notes: Optional notes about the result.
         """
+        start_time = time.monotonic()
         if not test_date:
             test_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -70,6 +92,7 @@ def register_manual_entry_tools(
         )
         sid = repository.save_snapshot(snapshot)
         logger.info("Manual lab entry saved: %s = %s %s (snapshot %s)", test_name, value, unit, sid)
+        _audit_manual_entry(audit_logger, "enter_lab_result", sid, start_time)
         return json.dumps({
             "status": "saved",
             "snapshot_id": sid,
@@ -101,6 +124,7 @@ def register_manual_entry_tools(
             body_temperature_f: Body temperature in Fahrenheit.
             reading_date: Date of the reading (ISO 8601). Defaults to today.
         """
+        start_time = time.monotonic()
         if not reading_date:
             reading_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -133,6 +157,7 @@ def register_manual_entry_tools(
         sid = repository.save_snapshot(snapshot)
         recorded = list(vitals.keys())
         logger.info("Manual vitals entry saved: %s (snapshot %s)", recorded, sid)
+        _audit_manual_entry(audit_logger, "enter_vitals", sid, start_time)
         return json.dumps({
             "status": "saved",
             "snapshot_id": sid,
@@ -156,6 +181,7 @@ def register_manual_entry_tools(
             status: Status (e.g., 'current', 'overdue', 'scheduled').
             notes: Optional notes about the screening.
         """
+        start_time = time.monotonic()
         preventive = {
             "screenings": {
                 screening_name: {
@@ -176,6 +202,7 @@ def register_manual_entry_tools(
         )
         sid = repository.save_snapshot(snapshot)
         logger.info("Manual screening entry saved: %s on %s (snapshot %s)", screening_name, date, sid)
+        _audit_manual_entry(audit_logger, "enter_screening", sid, start_time)
         return json.dumps({
             "status": "saved",
             "snapshot_id": sid,
@@ -197,6 +224,7 @@ def register_manual_entry_tools(
             date: Date of the vaccination (ISO 8601, e.g., '2026-01-15').
             status: Status (e.g., 'current', 'overdue').
         """
+        start_time = time.monotonic()
         preventive = {
             "vaccinations": {
                 vaccine_name: {
@@ -215,6 +243,7 @@ def register_manual_entry_tools(
         )
         sid = repository.save_snapshot(snapshot)
         logger.info("Manual vaccination entry saved: %s on %s (snapshot %s)", vaccine_name, date, sid)
+        _audit_manual_entry(audit_logger, "enter_vaccination", sid, start_time)
         return json.dumps({
             "status": "saved",
             "snapshot_id": sid,
@@ -234,6 +263,7 @@ def register_manual_entry_tools(
             data_type: Type of data to list: 'labs', 'vitals', 'screenings', 'all'.
             limit: Maximum number of entries to return.
         """
+        start_time = time.monotonic()
         snapshots = repository.get_snapshots(source="manual", limit=limit)
 
         entries = []
@@ -252,6 +282,15 @@ def register_manual_entry_tools(
 
             if len(entry) > 2:  # Has data beyond id+timestamp
                 entries.append(entry)
+
+        if audit_logger is not None:
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            audit_logger.log_tool_call(
+                tool_name="list_entered_data",
+                tool_input={"data_type": data_type, "limit": limit},
+                llm_disclosed=False,
+                duration_ms=elapsed_ms,
+            )
 
         return json.dumps({
             "status": "ok",

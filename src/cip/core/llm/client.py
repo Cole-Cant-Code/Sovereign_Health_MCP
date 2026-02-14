@@ -34,8 +34,9 @@ class LLMResponse:
 class InnerLLMClient:
     """Invokes the inner specialist LLM with scaffold-assembled prompts."""
 
-    def __init__(self, provider: LLMProvider) -> None:
+    def __init__(self, provider: LLMProvider, provider_name: str = "") -> None:
         self.provider = provider
+        self.provider_name = provider_name
 
     async def invoke(
         self,

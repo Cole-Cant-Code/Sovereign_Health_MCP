@@ -261,3 +261,11 @@ def health_repository(health_db, field_encryptor):
     from cip.core.storage.repository import HealthRepository
 
     return HealthRepository(health_db, field_encryptor)
+
+
+@pytest.fixture
+def audit_logger(health_db):
+    """Create an AuditLogger backed by in-memory SQLite."""
+    from cip.core.audit.logger import AuditLogger
+
+    return AuditLogger(health_db)
